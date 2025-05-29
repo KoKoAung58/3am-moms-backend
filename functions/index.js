@@ -90,7 +90,6 @@ exports.onNewChatMessage = onDocumentCreated(
       const message = snap.data();
       const senderId = message.senderId;
       const text = message.text || "You have a new message";
-
       const roomTitle = CHATROOMS[chatroomId] || "a chatroom";
 
       const allUsersSnap = await admin.firestore().collection("users").get();
@@ -100,11 +99,15 @@ exports.onNewChatMessage = onDocumentCreated(
         const userId = userDoc.id;
         if (userId === senderId) continue;
 
+        const userData = userDoc.data();
         const prefsRef = admin.firestore()
-            .collection("users").doc(userId)
-            .collection("chatroomPreferences").doc(chatroomId);
+            .collection("users")
+            .doc(userId)
+            .collection("chatroomPreferences")
+            .doc(chatroomId);
         const prefsSnap = await prefsRef.get();
 
+        // Default to 'all' if no preferences exist
         let level = "all";
         if (prefsSnap.exists) {
           const prefData = prefsSnap.data();
@@ -115,23 +118,32 @@ exports.onNewChatMessage = onDocumentCreated(
 
         if (level === "none") continue;
 
-        if (
-          level === "all" ||
-          (level === "mentions" && isMentioned(message.text, userDoc.data()))
-        ) {
-          const token = userDoc.data().fcmToken;
+        const isMention = level === "mentions" && isMentioned(text, userData);
+        const shouldSend =
+        level === "all" || (level === "mentions" && isMention);
+
+        if (shouldSend) {
+          const token = userData.fcmToken;
+          const fullName = `${userData.firstName || ""} 
+          ${userData.lastName || ""}`.trim();
           if (token) {
-            tokensToSend.push({token, userName: userDoc.data().firstName});
+            tokensToSend.push({
+              token,
+              isMention,
+              fullName,
+            });
           }
         }
       }
 
       const messaging = admin.messaging();
-      const payloads = tokensToSend.map(({token, userName}) => ({
+      const payloads = tokensToSend.map(({token, isMention, fullName}) => ({
         token,
         notification: {
-          title: `New message in ${roomTitle}`,
-          body: `${message.senderName || "Someone"}: ${truncate(text, 60)}`,
+          title: isMention ?
+          `${message.senderName || "Someone"} mentioned you in ${roomTitle}` :
+          `New message in ${roomTitle}`,
+          body: truncate(text, 60),
         },
         data: {
           chatroomId,
@@ -150,15 +162,21 @@ exports.onNewChatMessage = onDocumentCreated(
 );
 
 /**
- * Checks if a given text mentions the user by @firstName
+ * Checks if a given text mentions the user by @FullName or @FullNameNoSpaces
  * @param {string} text - The message text
  * @param {object} userData - The user's data object
  * @return {boolean} Whether the user was mentioned
  */
 function isMentioned(text, userData) {
-  const firstName = userData?.firstName;
-  if (!text || typeof firstName !== "string") return false;
-  return text.toLowerCase().includes(`@${firstName.toLowerCase()}`);
+  const firstName = userData?.firstName || "";
+  const lastName = userData?.lastName || "";
+  if (!text || !firstName || !lastName) return false;
+
+  const lowerText = text.toLowerCase();
+  const fullWithSpace = `@${firstName} ${lastName}`.toLowerCase();
+  const fullNoSpace = `@${firstName}${lastName}`.toLowerCase();
+
+  return lowerText.includes(fullWithSpace) || lowerText.includes(fullNoSpace);
 }
 
 /**
